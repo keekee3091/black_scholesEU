@@ -41,3 +41,16 @@ double gamma(double S, double K, double r, double sigma, double T) {
     double d1 = (std::log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * std::sqrt(T));
     return normalPDF(d1) / (S * sigma * std::sqrt(T));
 }
+
+double brownProb(double S, double target, double r, double sigma, double T, const std::string& type) {
+    if (target <= 0 || sigma <= 0 || T <= 0) return 0.0;
+
+    double d = (std::log(target / S) - (r - 0.5 * sigma * sigma) * T) / (sigma * std::sqrt(T));
+
+    if (type == "call") {
+        return 1.0 - normalCDF(d);
+    }
+    else {
+        return normalCDF(d);     
+    }
+}

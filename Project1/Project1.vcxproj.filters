@@ -27,4 +27,7 @@
       <Filter>Fichiers sources</Filter>
     </ClCompile>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="fetch_data.py" />
+  </ItemGroup>
 </Project>

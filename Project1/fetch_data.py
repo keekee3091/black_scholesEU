@@ -9,31 +9,52 @@ import requests
 from fastapi import FastAPI, Query, HTTPException
 import uvicorn
 from threading import Thread
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 CACHE_DIR = "cache"
 app = FastAPI()
 
 @app.get('/ticker')
 def get_ticker(symbol: str = Query(...)):
-    symbol = symbol.upper()
+    symbol_list = [s.strip().upper() for s in symbol.split(",") if s.strip()]
     os.makedirs(CACHE_DIR, exist_ok=True)
-    cache_file = os.path.join(CACHE_DIR, f"{symbol}_ALL_options.xlsx")
 
-    if os.path.exists(cache_file):
-        print(f"[{symbol}] Chargement depuis le cache")
-        df = pd.read_excel(cache_file)
-        options = df.to_dict(orient="records")
-    else:
-        print(f"[{symbol}] Pas de cache, r�cup�ration via yfinance")
-        options = fetch_options(symbol)
-        if not options:
-            raise HTTPException(status_code=404, detail="Aucune option trouv�e pour ce symbole.")
-        write_excel(options, filename=cache_file)
+    all_options = []
 
-    return options
+    def fetch_with_cache(sym):
+        cache_file = os.path.join(CACHE_DIR, f"{sym}_ALL_options.xlsx")
+
+        if os.path.exists(cache_file):
+            print(f"[{sym}] Loading from cache")
+            df = pd.read_excel(cache_file)
+            return df.to_dict(orient="records")
+        else:
+            print(f"[{sym}] No cache. Loading...")
+            options = fetch_options(sym)
+            if not options:
+                print(f"[{sym}] No option found")
+                return []
+            write_excel(options, filename=cache_file)
+            return options
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(fetch_with_cache, sym): sym for sym in symbol_list}
+
+        for future in as_completed(futures):
+            try:
+                data = future.result()
+                all_options.extend(data)
+            except Exception as e:
+                sym = futures[future]
+                print(f"[{sym}] Error : {e}")
+
+    if not all_options:
+        raise HTTPException(status_code=404, detail="No option found for symbols")
+
+    return all_options
 
 def use_tor_proxy():
-    print("[TOR] Utilisation du proxy socks5h://127.0.0.1:9050")
+    print("[TOR] proxy socks5h://127.0.0.1:9050")
 
     class TorSession(requests.Session):
         def __init__(self, *args, **kwargs):
@@ -45,10 +66,26 @@ def use_tor_proxy():
 
     requests.Session = TorSession
 
+def fetch_options_threaded(symbols, max_threads=4):
+    all_options = []
+
+    def safe_fetch(sym):
+        try:
+            return fetch_options(sym)
+        except Exception as e:
+            print(f"[{sym}] Error : {e}")
+            return []
+
+    with ThreadPoolExecutor(max_workers=max_threads) as executor:
+        futures = {executor.submit(safe_fetch, sym): sym for sym in symbols}
+
+        for future in as_completed(futures):
+            all_options.extend(future.result())
+
+    return all_options
 
 def fetch_options(symbol, retry_wait=2, max_retries=10):
     print(f"\n--- {symbol} ---")
-    time.sleep(2)
 
     for attempt in range(max_retries):
         try:
@@ -56,18 +93,18 @@ def fetch_options(symbol, retry_wait=2, max_retries=10):
             time.sleep(1)
             expirations = ticker.options
             spot_price = ticker.info.get("regularMarketPrice", None)
-            print(f"{len(expirations)} �ch�ances trouv�es pour {symbol}")
+            print(f"{len(expirations)} terms found for {symbol}")
             break
         except YFRateLimitError:
-            print(f"[{symbol}] Rate limit atteint. Tentative {attempt+1}/{max_retries}. Pause {retry_wait}s...")
+            print(f"[{symbol}] Rate limit reached. Attempt {attempt+1}/{max_retries}. Pause {retry_wait}s...")
             time.sleep(retry_wait)
             if attempt == 2:
                 use_tor_proxy()
         except Exception as e:
-            print(f"[{symbol}] Erreur initiale : {e}")
+            print(f"[{symbol}] Init error : {e}")
             return []
     else:
-        print(f"[{symbol}] Trop de tentatives infructueuses. Abandon.")
+        print(f"[{symbol}] Too many errors.")
         return []
 
     all_options = []
@@ -77,7 +114,7 @@ def fetch_options(symbol, retry_wait=2, max_retries=10):
             opt_chain = ticker.option_chain(date)
             time.sleep(1)
         except Exception as e:
-            print(f"[{symbol}] Erreur � la date {date} : {e}")
+            print(f"[{symbol}] Date error : {date} : {e}")
             continue
 
         for df, opt_type in [(opt_chain.calls, "call"), (opt_chain.puts, "put")]:
@@ -96,7 +133,7 @@ def fetch_options(symbol, retry_wait=2, max_retries=10):
 
 def write_excel(options, filename):
     if not options:
-        print("Aucune donn�e � �crire.")
+        print("No data")
         return
     df = pd.DataFrame(options)
     df.to_excel(filename, index=False)
@@ -107,7 +144,7 @@ def fetch_and_save(symbol):
     output_path = os.path.join(CACHE_DIR, f"{symbol}_ALL_options.xlsx")
 
     if os.path.exists(output_path):
-        print(f"[{symbol}] Fichier d�j� existant, on saute.")
+        print(f"[{symbol}] File already exists")
         return
 
     options = fetch_options(symbol)

@@ -10,51 +10,19 @@
 #include <sstream>
 #include <ctime>
 #include <random>
+#include <cpr/cpr.h>
+#include <stdexcept>
 
 
-nlohmann::json callPythonAPI(const std::string& symbol) {
-    Py_Initialize();
-    PyRun_SimpleString("import sys");
-    PyRun_SimpleString("sys.path.append('C:/Dev/bs_options/black_scholesEU/Project1')");
-    nlohmann::json result_json;
+nlohmann::json callPythonAPI_HTTP(const std::string& symbol) {
+    std::string url = "http://localhost:8000/ticker?symbol=" + symbol;
+    auto response = cpr::Get(cpr::Url{ url });
 
-    try {
-        PyObject* pName = PyUnicode_FromString("fetch_data");
-        PyObject* pModule = PyImport_Import(pName);
-        Py_DECREF(pName);
-        if (!pModule) {
-            PyErr_Print();  // <== Ajoute ceci pour voir l'erreur réelle
-            throw std::runtime_error("Module Python non chargé");
-        }
-        PyObject* pFunc = PyObject_GetAttrString(pModule, "get_ticker");
-        if (!pFunc || !PyCallable_Check(pFunc)) throw std::runtime_error("Fonction get_ticker non trouvée");
-
-        PyObject* pArgs = PyTuple_Pack(1, PyUnicode_FromString(symbol.c_str()));
-        PyObject* pResult = PyObject_CallObject(pFunc, pArgs);
-        Py_DECREF(pArgs);
-        if (!pResult) throw std::runtime_error("Erreur lors de l'appel Python");
-
-        PyObject* jsonModule = PyImport_ImportModule("json");
-        PyObject* dumpsFunc = PyObject_GetAttrString(jsonModule, "dumps");
-        PyObject* jsonArgs = PyTuple_Pack(1, pResult);
-        PyObject* kwargs = PyDict_New();
-        PyDict_SetItemString(kwargs, "ensure_ascii", Py_True); 
-        PyObject* jsonStr = PyObject_Call(dumpsFunc, jsonArgs, kwargs);
-        Py_DECREF(kwargs);
-
-        const char* json_cstr = PyUnicode_AsUTF8(jsonStr);
-        result_json = nlohmann::json::parse(json_cstr);
-
-        Py_XDECREF(jsonStr); Py_XDECREF(jsonArgs); Py_XDECREF(dumpsFunc);
-        Py_XDECREF(jsonModule); Py_XDECREF(pResult); Py_XDECREF(pFunc); Py_XDECREF(pModule);
-    }
-    catch (...) {
-        Py_Finalize();
-        throw;
+    if (response.status_code != 200) {
+        throw std::runtime_error("API error: " + response.text);
     }
 
-    Py_Finalize();
-    return result_json;
+    return nlohmann::json::parse(response.text);
 }
 
 double computeMaturity(const std::string& expiration_str) {
@@ -69,6 +37,7 @@ double computeMaturity(const std::string& expiration_str) {
 }
 
 int main() {
+
     crow::SimpleApp app;
 
     CROW_ROUTE(app, "/price").methods("GET"_method)
@@ -78,31 +47,37 @@ int main() {
         const char* r_c = qs.get("r");
 
         if (!symbol_c || !r_c)
-            return crow::response(400, "Paramètre manquant (symbol, r)");
+            return crow::response(400, "missing params (symbol, r)");
 
         try {
-            std::string symbol = symbol_c;
+            std::string symbol_query = symbol_c;  // "JNJ,XOM,PG,V"
             double r = std::stod(r_c);
-
-            auto data = callPythonAPI(symbol);
+            auto data = callPythonAPI_HTTP(symbol_query);  // renvoie toutes les options
 
             crow::json::wvalue results;
-            results["symbol"] = symbol;
-            std::vector<crow::json::wvalue> opt_list;
+            results["symbol"] = symbol_query;
+
+            std::map<std::string, std::vector<crow::json::wvalue>> grouped_options;
 
             const double score_threshold = 0.1;
             const double min_volume = 100;
+            const double score_buy_thresold = 300.0;
+            const double score_sell_threshold = -300.0;
+            const double prob_ITM_threshold = 0.6;
+            const double volume_threshold = 100.0;
+            const double delta_limit = 0.2;
 
             for (const auto& opt : data) {
-                std::string opt_type = opt["type"];
-                double K = opt["strike"];
-                double S = opt["spot"];
-                double sigma = opt["impliedVolatility"];
+                std::string opt_type = opt.at("type").get<std::string>();
+                std::string sym = opt.at("symbol").get<std::string>();
+                double K = opt.at("strike").get<double>();
+                double S = opt.at("spot").get<double>();
+                double sigma = opt.at("impliedVolatility").get<double>();
                 if (sigma < 0.01) continue;
-                double last_price = opt["lastPrice"];
-                std::string expiration = opt["expiration"];
+                double last_price = opt.at("lastPrice").get<double>();
+                std::string expiration = opt.at("expiration").get<std::string>();
                 double T = computeMaturity(expiration);
-                double V = opt.value("volume", 100.0);
+                double V = opt.contains("volume") ? opt.at("volume").get<double>() : 100.0;
 
                 if (T <= 0.0 || sigma <= 0.0 || S <= 0.0) continue;
 
@@ -115,14 +90,36 @@ int main() {
                     : deltaPut(S, K, r, sigma, T);
 
                 double gam = gamma(S, K, r, sigma, T);
+                double theta = (opt_type == "call")
+                    ? thetaCall(S, K, r, sigma, T)
+                    : thetaPut(S, K, r, sigma, T);
+                double rho = (opt_type == "call")
+                    ? rhoCall(S, K, r, sigma, T)
+                    : rhoPut(S, K, r, sigma, T);
+                double vega_val = vega(S, K, r, sigma, T);
 
                 double prob_ITM = brownProb(S, K, r, sigma, T, opt_type);
-
                 double mispricing = bs_price - last_price;
-
                 double score = mispricing * delta * V;
 
-                if (std::abs(score) < score_threshold || V < min_volume) continue;
+                if (std::isnan(score) || std::isnan(prob_ITM)) continue;
+
+                std::string action = "hold";
+
+                std::string reason = "Moderate score";
+
+                if (V < volume_threshold || T < 0.1) {
+                    action = "ignore";
+                    reason = "Low volume or short maturity";
+                }
+                else if (score >= score_buy_thresold && prob_ITM >= prob_ITM_threshold && std::abs(delta) > delta_limit) {
+                    action = "buy";
+                    reason = "High score + strong ITM probability + significant delta";
+                }
+                else if (score <= score_sell_threshold && prob_ITM >= prob_ITM_threshold && std::abs(delta) > delta_limit) {
+                    action = "sell";
+                    reason = "Strong negative score + strong ITM probability + significant delta";
+                }
 
                 crow::json::wvalue res;
                 res["type"] = opt_type;
@@ -135,21 +132,36 @@ int main() {
                 res["market_price"] = last_price;
                 res["delta"] = delta;
                 res["gamma"] = gam;
+                res["theta"] = theta;
+                res["vega"] = vega_val;
+                res["rho"] = rho;
                 res["volume"] = V;
                 res["mispricing"] = mispricing;
                 res["score"] = score;
                 res["prob_ITM"] = prob_ITM;
+                res["moneyness"] = S / K;
+                res["action"] = action;
+                res["action_reason"] = reason;
 
-                opt_list.emplace_back(std::move(res));
+                grouped_options[sym].push_back(std::move(res));
             }
 
-            results["options"] = std::move(opt_list);
+            // Convertir grouped_options en crow::json::wvalue
+            crow::json::wvalue options_by_symbol;
+            for (auto& [sym, vec] : grouped_options) {
+                options_by_symbol[sym] = std::move(vec);
+            }
+
+            results["options"] = std::move(options_by_symbol);
             return crow::response{ results };
         }
         catch (const std::exception& e) {
-            return crow::response(500, std::string("Erreur interne : ") + e.what());
+            return crow::response(500, std::string("Intern error : ") + e.what());
         }
             });
+
     app.port(8080).multithreaded().run();
+
+
     return 0;
 }

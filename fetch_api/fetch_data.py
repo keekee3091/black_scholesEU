@@ -10,6 +10,7 @@ from fastapi import FastAPI, Query, HTTPException
 import uvicorn
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 CACHE_DIR = "cache"
 app = FastAPI()
@@ -52,6 +53,42 @@ def get_ticker(symbol: str = Query(...)):
         raise HTTPException(status_code=404, detail="No option found for symbols")
 
     return all_options
+
+@app.get('/historical')
+def get_historical_prices(
+    symbol: str = Query(...),
+    from_date: str = Query(..., alias="from"),
+    to_date: str = Query(..., alias="to")
+):
+    symbol_list = [s.strip().upper() for s in symbol.split(",") if s.strip()]
+    results = {}
+
+    try:
+        start = datetime.strptime(from_date, "%Y-%m-%d").date()
+        end = datetime.strptime(to_date, "%Y-%m-%d").date()
+    except ValueError:
+        return {"error": "Invalid date format. Use YYYY-MM-DD."}
+
+    for sym in symbol_list:
+        try:
+            ticker = yf.Ticker(sym)
+            hist = ticker.history(start=from_date, end=to_date)
+
+            if hist.empty:
+                results[sym] = {"error": "No historical data available"}
+                continue
+
+            hist = hist.reset_index()
+            hist["Date"] = hist["Date"].dt.strftime("%Y-%m-%d")
+            results[sym] = hist[["Date", "Open", "High", "Low", "Close"]].to_dict(orient="records")
+            cache_file = os.path.join(CACHE_DIR, f"{sym}_Historical.xlsx")
+            write_excel(results,cache_file)
+
+        except Exception as e:
+            results[sym] = {"error": str(e)}
+
+    return results
+
 
 def use_tor_proxy():
     print("[TOR] proxy socks5h://127.0.0.1:9050")

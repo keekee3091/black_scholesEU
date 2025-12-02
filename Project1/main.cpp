@@ -1,4 +1,3 @@
-#include <Python.h>
 #include <crow.h>
 #include <nlohmann/json.hpp>
 #include "black_scholes.hpp"

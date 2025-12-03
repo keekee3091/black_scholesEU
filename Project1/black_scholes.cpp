@@ -83,3 +83,62 @@ double brownProb(double S, double target, double r, double sigma, double T, cons
         return normalCDF(d);
     }
 }
+
+double vegaNormalized(double mispricing, double vegaVal) {
+    if (std::abs(vegaVal) < 0.5) return 0.0;   
+    return mispricing / vegaVal;
+}
+
+
+double ivZScore(double sigma, double ivMean, double ivStd) {
+    if (ivStd < 1e-9) return 0.0;
+    return (sigma - ivMean) / ivStd;
+}
+
+double gammaRiskScore(double gammaVal, double spot, double movePercent = 0.02) {
+    double dS = spot * movePercent;
+    return std::abs(gammaVal) * dS * dS;
+}
+
+double thetaBleedDaily(double thetaVal) {
+    return thetaVal;
+}
+
+double liquidityScore(double volume, double delta) {
+    return std::sqrt(volume) * std::abs(delta);
+}
+
+double skewEdge(double sigma, double iv_mean, double iv_std, double moneyness) {
+    if (iv_std < 1e-9) return 0.0;
+    double nz = (sigma - iv_mean) / iv_std;
+    return -nz * (moneyness - 1.0);
+}
+
+double smileDistance(double sigma, double iv_mean) {
+    return iv_mean - sigma;
+}
+
+double sabrEnhancedScore(
+    double scoreRaw,
+    double vegaNorm,
+    double ivZ,
+    double liquidity,
+    double gamRisk,
+    double skew,
+    double smileDist)
+{
+    return 0.6 * scoreRaw
+        + 1.0 * vegaNorm
+        - 0.3 * std::abs(ivZ)
+        + 0.8 * liquidity
+        - 0.5 * gamRisk
+        + 0.4 * skew
+        + 0.2 * smileDist;
+}
+
+double dynamicMaxDelta(double T, double moneyness) {
+    double base = 0.95 + 0.03 * std::exp(-5 * T);
+    if (moneyness > 2.0)  
+        base += 0.02;     
+    return std::min(base, 0.995);
+}

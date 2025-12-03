@@ -6,14 +6,26 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from yfinance.exceptions import YFRateLimitError
 import requests
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Request
 import uvicorn
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from dotenv import load_dotenv
 
 CACHE_DIR = "cache"
 app = FastAPI()
+load_dotenv()
+API_KEY = os.getenv("API_KEY")
+
+@app.middleware("http")
+async def verify_api_key(request: Request, call_next):
+    key = request.headers.get("X-API-KEY")
+
+    if key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid or missing API key")
+
+    return await call_next(request)
 
 @app.get('/ticker')
 def get_ticker(symbol: str = Query(...)):
@@ -23,7 +35,8 @@ def get_ticker(symbol: str = Query(...)):
     all_options = []
 
     def fetch_with_cache(sym):
-        cache_file = os.path.join(CACHE_DIR, f"{sym}_ALL_options.xlsx")
+        date = datetime.now().strftime("%Y%m%d")
+        cache_file = os.path.join(CACHE_DIR, f"{sym}_ALL_options_{date}.xlsx")
 
         if os.path.exists(cache_file):
             print(f"[{sym}] Loading from cache")
@@ -172,13 +185,15 @@ def write_excel(options, filename):
     if not options:
         print("No data")
         return
+
     df = pd.DataFrame(options)
     df.to_excel(filename, index=False)
-    print(f"{len(options)} options saved to {filename}")
+    print(f"{len(options)} rows saved to {filename}")
 
 def fetch_and_save(symbol):
     os.makedirs(CACHE_DIR, exist_ok=True)
-    output_path = os.path.join(CACHE_DIR, f"{symbol}_ALL_options.xlsx")
+    date = datetime.now().strftime("%Y%m%d")
+    output_path = os.path.join(CACHE_DIR, f"{symbol}_ALL_options_{date}.xlsx")
 
     if os.path.exists(output_path):
         print(f"[{symbol}] File already exists")

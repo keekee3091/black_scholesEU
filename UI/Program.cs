@@ -1,10 +1,12 @@
 using UI.Components;
+using UI.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
+builder.Services.AddHttpClient<OptionService>();
 
 var app = builder.Build();
 

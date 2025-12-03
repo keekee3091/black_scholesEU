@@ -1,0 +1,209 @@
+﻿@page "/scanner"
+@using UI.Models
+@using UI.Services
+@inject OptionService OptionService
+@rendermode InteractiveServer
+
+<PageTitle>Scanner</PageTitle>
+
+<h3>Scanner</h3>
+
+<div class="input-group mb-3">
+    <input class="form-control"
+           @bind="symbol"
+           placeholder="Ticker (eg. NVDA)" />
+    <input class="form-control"
+           @bind="rate"
+           type="number"
+           step="0.001" />
+    <button class="btn btn-primary" @onclick="Load">Run</button>
+</div>
+
+@if (loading)
+{
+    <p>Loading...</p>
+}
+else if (options != null)
+{
+    <table class="table table-striped">
+        <thead>
+            <tr>
+                <th @onclick="@(() => SortColumn("Type"))" style="cursor:pointer">Type</th>
+                <th @onclick="@(() => SortColumn("Strike"))" style="cursor:pointer">Strike</th>
+                <th @onclick="@(() => SortColumn("Spot"))" style="cursor:pointer">Spot</th>
+                <th @onclick="@(() => SortColumn("Expiration"))" style="cursor:pointer">Expiration</th>
+                <th @onclick="@(() => SortColumn("Sigma"))" style="cursor:pointer">σ</th>
+                <th @onclick="@(() => SortColumn("BSPrice"))" style="cursor:pointer">Black-Scholes</th>
+                <th @onclick="@(() => SortColumn("MarketPrice"))" style="cursor:pointer">Market Price</th>
+                <th @onclick="@(() => SortColumn("Mispricing"))" style="cursor:pointer">Mispricing</th>
+                <th @onclick="@(() => SortColumn("Delta"))" style="cursor:pointer">Delta</th>
+                <th @onclick="@(() => SortColumn("ProbITM"))" style="cursor:pointer">ITM</th>
+                <th @onclick="@(() => SortColumn("Moneyness"))" style="cursor:pointer">Moneyness</th>
+                <th @onclick="@(() => SortColumn("IVMean"))" style="cursor:pointer">IV Mean</th>
+                <th @onclick="@(() => SortColumn("IVStd"))" style="cursor:pointer">IV Std</th>
+                <th @onclick="@(() => SortColumn("VegaNorm"))" style="cursor:pointer">Vega Norm</th>
+                <th @onclick="@(() => SortColumn("IVZ"))" style="cursor:pointer">IV z</th>
+                <th @onclick="@(() => SortColumn("GammaRisk"))" style="cursor:pointer">Gamma Risk</th>
+                <th @onclick="@(() => SortColumn("ThetaBleed"))" style="cursor:pointer">Theta Bleed</th>
+                <th @onclick="@(() => SortColumn("LiquidityScore"))" style="cursor:pointer">Liquidity</th>
+                <th @onclick="@(() => SortColumn("EnhancedScore"))" style="cursor:pointer">Enhanced Score</th>
+                <th @onclick="@(() => SortColumn("Action"))" style="cursor:pointer">Action</th>
+                <th @onclick="@(() => SortColumn("ActionReason"))" style="cursor:pointer">Action Reason</th>
+            </tr>
+        </thead>
+
+        <tbody>
+            @foreach (var o in FilteredOptions)
+            {
+                <tr>
+                    <td>@o.Type</td>
+                    <td>@o.Strike.ToString("F2")</td>
+                    <td>@o.Spot.ToString("F2")</td>
+                    <td>@DateTime.Parse(o.Expiration).ToShortDateString()</td>
+
+                    <td>@o.Sigma.ToString("F6")</td>
+                    <td>@o.BSPrice.ToString("F4")</td>
+                    <td>@o.MarketPrice.ToString("F4")</td>
+                    <td>@o.Mispricing.ToString("F4")</td>
+
+                    <td>@FormatDelta(o.Delta)</td>
+
+                    <td>@o.ProbITM.ToString("P2")</td>
+                    <td>@o.Moneyness.ToString("F4")</td>
+                    <td>@o.IVMean.ToString("F4")</td>
+                    <td>@o.IVStd.ToString("F4")</td>
+                    <td>@o.VegaNorm.ToString("F2")</td>
+                    <td>@o.IVZ.ToString("F2")</td>
+                    <td>@o.GammaRisk.ToString("F6")</td>
+                    <td>@o.ThetaBleed.ToString("F6")</td>
+                    <td>@o.LiquidityScore.ToString("F6")</td>
+                    <td>@FormatEnhanced(o.EnhancedScore)</td>
+                    <td>@ScoreBadge(o.Action)</td>
+                    <td>@o.ActionReason</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private string symbol = "NVDA";
+    private double rate = 0.05;
+    private List<OptionModel>? options;
+    private bool loading = false;
+
+    private async Task Load()
+    {
+        Console.WriteLine("LOAD TRIGGERED");
+
+        loading = true;
+        StateHasChanged();
+
+        options = await OptionService.GetOptions(symbol, rate);
+
+        loading = false;
+        StateHasChanged();
+    }
+
+    private RenderFragment ScoreBadge(string action) => builder =>
+    {
+        var text = action switch
+        {
+            "buy" => "BUY",
+            "sell" => "SELL",
+            "ignore" => "IGNORE",
+            _ => action.ToUpper()
+        };
+
+        var css = action switch
+        {
+            "buy" => "badge bg-success",
+            "sell" => "badge bg-danger",
+            "ignore" => "badge bg-secondary",
+            _ => "badge bg-primary"
+        };
+
+        builder.OpenElement(0, "span");
+        builder.AddAttribute(1, "class", css);
+        builder.AddContent(2, text);
+        builder.CloseElement();
+    };
+
+    private string FormatDelta(double d)
+    {
+        return d.ToString("F4");
+    }
+    private string FormatScore(double s)
+    {
+        if (Math.Abs(s) < 1e-4)
+            return "0.0000";
+
+        return s.ToString("F4");
+    }
+    string FormatEnhanced(double score)
+    {
+        if (score > 0)
+            return $"+{score:F0}";
+        return $"{score:F0}";
+    }
+    private string? sortColumn;
+    private bool sortDescending = false;
+
+    private void SortColumn(string column)
+    {
+        if (sortColumn == column)
+        {
+            sortDescending = !sortDescending;
+        }
+        else
+        {
+            sortColumn = column;
+            sortDescending = false;
+        }
+    }
+    IEnumerable<OptionModel> FilteredOptions
+    {
+        get
+        {
+            if (options == null)
+                return Enumerable.Empty<OptionModel>();
+
+            var data = options.Where(o =>
+                !String.Equals(o.Action, "ignore", StringComparison.OrdinalIgnoreCase));
+
+            if (!string.IsNullOrWhiteSpace(sortColumn))
+            {
+                data = sortColumn switch
+                {
+                    "Type" => sortDescending ? data.OrderByDescending(o => o.Type) : data.OrderBy(o => o.Type),
+                    "Strike" => sortDescending ? data.OrderByDescending(o => o.Strike) : data.OrderBy(o => o.Strike),
+                    "Spot" => sortDescending ? data.OrderByDescending(o => o.Spot) : data.OrderBy(o => o.Spot),
+                    "Expiration" => sortDescending ? data.OrderByDescending(o => DateTime.Parse(o.Expiration)) : data.OrderBy(o => DateTime.Parse(o.Expiration)),
+                    "Sigma" => sortDescending ? data.OrderByDescending(o => o.Sigma) : data.OrderBy(o => o.Sigma),
+                    "BSPrice" => sortDescending ? data.OrderByDescending(o => o.BSPrice) : data.OrderBy(o => o.BSPrice),
+                    "MarketPrice" => sortDescending ? data.OrderByDescending(o => o.MarketPrice) : data.OrderBy(o => o.MarketPrice),
+                    "Mispricing" => sortDescending ? data.OrderByDescending(o => o.Mispricing) : data.OrderBy(o => o.Mispricing),
+                    "Delta" => sortDescending ? data.OrderByDescending(o => o.Delta) : data.OrderBy(o => o.Delta),
+                    "ProbITM" => sortDescending ? data.OrderByDescending(o => o.ProbITM) : data.OrderBy(o => o.ProbITM),
+                    "Moneyness" => sortDescending ? data.OrderByDescending(o => o.Moneyness) : data.OrderBy(o => o.Moneyness),
+                    "IVMean" => sortDescending ? data.OrderByDescending(o => o.IVMean) : data.OrderBy(o => o.IVMean),
+                    "IVStd" => sortDescending ? data.OrderByDescending(o => o.IVStd) : data.OrderBy(o => o.IVStd),
+                    "VegaNorm" => sortDescending ? data.OrderByDescending(o => o.VegaNorm) : data.OrderBy(o => o.VegaNorm),
+                    "IVZ" => sortDescending ? data.OrderByDescending(o => o.IVZ) : data.OrderBy(o => o.IVZ),
+                    "GammaRisk" => sortDescending ? data.OrderByDescending(o => o.GammaRisk) : data.OrderBy(o => o.GammaRisk),
+                    "ThetaBleed" => sortDescending ? data.OrderByDescending(o => o.ThetaBleed) : data.OrderBy(o => o.ThetaBleed),
+                    "LiquidityScore" => sortDescending ? data.OrderByDescending(o => o.LiquidityScore) : data.OrderBy(o => o.LiquidityScore),
+                    "EnhancedScore" => sortDescending ? data.OrderByDescending(o => o.EnhancedScore) : data.OrderBy(o => o.EnhancedScore),
+                    "Action" => sortDescending ? data.OrderByDescending(o => o.Action) : data.OrderBy(o => o.Action),
+                    "ActionReason" => sortDescending ? data.OrderByDescending(o => o.ActionReason) : data.OrderBy(o => o.ActionReason),
+
+                    _ => data
+                };
+            }
+
+            return data;
+        }
+    }
+
+
+}
